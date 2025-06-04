@@ -1,12 +1,12 @@
 import * as THREE from "https://cdn.skypack.dev/three@0.129.0/build/three.module.js";
 import { GLTFLoader } from "https://cdn.skypack.dev/three@0.129.0/examples/jsm/loaders/GLTFLoader.js";
 import { DRACOLoader } from "https://cdn.skypack.dev/three@0.129.0/examples/jsm/loaders/DRACOLoader.js";
-import * as dat from 'https://cdn.skypack.dev/dat.gui';
 import { RGBELoader } from 'https://cdn.skypack.dev/three@0.129.0/examples/jsm/loaders/RGBELoader.js';
 import { CSS2DObject } from 'https://cdn.skypack.dev/three@0.129.0/examples/jsm/renderers/CSS2DRenderer.js';
 import { EffectComposer } from 'https://cdn.skypack.dev/three@0.129.0/examples/jsm/postprocessing/EffectComposer.js';
 import { RenderPass } from 'https://cdn.skypack.dev/three@0.129.0/examples/jsm/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'https://cdn.skypack.dev/three@0.129.0/examples/jsm/postprocessing/UnrealBloomPass.js';
+import { CubeTextureLoader } from 'https://cdn.skypack.dev/three@0.129.0/build/three.module.js';
 
 // Constants
 const CAMERA_FOV = 55;
@@ -14,21 +14,57 @@ const CAMERA_NEAR = 0.1;
 const CAMERA_FAR = 12000;
 const RENDERER_ALPHA = true;
 const LIGHT_COLOR = 0xffffff;
-const LIGHT_INTENSITY = 1;
+const LIGHT_INTENSITY = 0.1;
 const AMBIENT_LIGHT_INTENSITY = 0.3;
 const CAMERA_HEIGHT = 5;
-const GRAVITY_STRENGTH = 0;
-const COLLISION_PADDING = 2;
-const MAX_SLOPE = Math.PI / 3;
+const GRAVITY_STRENGTH = 0.5; // Adjusted for smoother camera movement
+const COLLISION_PADDING = 0; // Padding to prevent camera from clipping through the surface
+const MAX_SLOPE = Math.PI /3;
 const SHAKE_INTENSITY = 1;
 const SHAKE_DECAY = 0.95;
 const SHAKE_THRESHOLD_SPEED = 5;
 const SMOOTHING_FACTOR = 0.15;
 const ROTATION_SMOOTHING = 0.1;
 
+
 // Create scene
 const scene = new THREE.Scene();
 scene.fog = new THREE.FogExp2(0x0a0e17, 0.0005);
+
+// Enhanced cubemap loading with fallback
+let envMap;
+const cubeTextureLoader = new CubeTextureLoader();
+const hdriUrls = [
+  'hdri_map/px.jpg',
+  'hdri_map/nx.jpg',
+  'hdri_map/py.jpg',
+  'hdri_map/ny.jpg',
+  'hdri_map/pz.jpg',
+  'hdri_map/nz.jpg'
+];
+
+// Try loading HDRI first, fallback to simple color if fails
+cubeTextureLoader.load(hdriUrls,
+  (texture) => {
+    envMap = texture;
+    envMap.encoding = THREE.sRGBEncoding;
+    scene.background = envMap;
+    scene.environment = envMap;
+    
+    // Enhance environment map
+    envMap.mapping = THREE.CubeReflectionMapping;
+    envMap.needsUpdate = true;
+  },
+  (progress) => {
+    console.log(`Loading HDRI: ${progress.loaded / progress.total * 100}%`);
+  },
+  (error) => {
+    console.error("Failed to load HDRI cubemap, using fallback", error);
+    // Fallback to simple environment
+    scene.background = new THREE.Color(0x0a0e17);
+    scene.environment = new THREE.Color(0x0a0e17);
+  }
+);
 
 // Setup lighting
 const ambientLight = new THREE.AmbientLight(LIGHT_COLOR, AMBIENT_LIGHT_INTENSITY);
@@ -37,6 +73,11 @@ scene.add(ambientLight);
 const directionalLight = new THREE.DirectionalLight(LIGHT_COLOR, LIGHT_INTENSITY);
 directionalLight.position.set(1, 1, 1).normalize();
 scene.add(directionalLight);
+
+// Add additional lights for better illumination
+const hemisphereLight = new THREE.HemisphereLight(0xffffff, 0x444444, 0.5);
+hemisphereLight.position.set(0, 1, 1);
+scene.add(hemisphereLight);
 
 // Create camera
 const camera = new THREE.PerspectiveCamera(CAMERA_FOV, window.innerWidth / window.innerHeight, CAMERA_NEAR, CAMERA_FAR);
@@ -64,6 +105,7 @@ renderer.outputEncoding = THREE.sRGBEncoding;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 1;
 renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
 // Add bloom effect
 const bloomParams = {
@@ -95,23 +137,33 @@ if (container) {
   if (minimapElement) {
     minimapElement.appendChild(minimapRenderer.domElement);
   }
+} else {
+  document.body.appendChild(renderer.domElement);
 }
+
+
 
 // Loading manager for progress tracking
 const loadingManager = new THREE.LoadingManager(
   () => {
     setTimeout(() => {
-      document.getElementById('loading-screen').style.opacity = '0';
-      setTimeout(() => {
-        document.getElementById('loading-screen').style.display = 'none';
-        document.getElementById('BgSound').play();
-      }, 1000);
+      const loadingScreen = document.getElementById('loading-screen');
+      if (loadingScreen) {
+        loadingScreen.style.opacity = '0';
+        setTimeout(() => {
+          loadingScreen.style.display = 'none';
+          const bgSound = document.getElementById('BgSound');
+          if (bgSound) bgSound.play();
+        }, 1000);
+      }
     }, 500);
   },
   (item, loaded, total) => {
     const progress = (loaded / total) * 100;
-    document.querySelector('.progress-bar').style.width = `${progress}%`;
-    document.querySelector('.progress-text').textContent = `${Math.round(progress)}%`;
+    const progressBar = document.querySelector('.progress-bar');
+    const progressText = document.querySelector('.progress-text');
+    if (progressBar) progressBar.style.width = `${progress}%`;
+    if (progressText) progressText.textContent = `${Math.round(progress)}%`;
   }
 );
 
@@ -128,10 +180,21 @@ let moonObject;
 let roverObject;
 let hotspots = [];
 let waypoints = [];
+let yaw = camera.rotation.y;
+let pitch = camera.rotation.x;
+
+// Locked rover settings
+const roverSettings = {
+  posX: 804,
+  posY: 5100,
+  posZ: -1616,
+  rotY: 4.3,
+  scale: 131
+};
 
 // Load moon model
 loader.load(
-  `models/moon_try_1.glb`,
+  'models/moon_try_1.glb',
   (gltf) => {
     moonObject = gltf.scene;
     moonObject.scale.set(1000, 1000, 1000);
@@ -156,35 +219,37 @@ loader.load(
   },
   (xhr) => {
     const progress = (xhr.loaded / xhr.total) * 100;
-    document.querySelector('.progress-bar').style.width = `${progress}%`;
-    document.querySelector('.progress-text').textContent = `${Math.round(progress)}%`;
+    const progressBar = document.querySelector('.progress-bar');
+    const progressText = document.querySelector('.progress-text');
+    if (progressBar) progressBar.style.width = `${progress}%`;
+    if (progressText) progressText.textContent = `${Math.round(progress)}%`;
   },
   (error) => {
     console.error(error);
-    document.querySelector('.progress-text').textContent = "Error loading model";
+    const progressText = document.querySelector('.progress-text');
+    if (progressText) progressText.textContent = "Error loading model";
   }
 );
 
-// Load rover model
+// Load rover model with locked position
 function loadRoverModel() {
   loader.load(
-    `models/nasaRover.glb`,
+    'models/nasaRover.glb',
     (gltf) => {
       roverObject = gltf.scene;
-      roverObject.scale.set(50, 50, 50);
-      roverObject.position.set(1000, 5350, 2000);
-      roverObject.rotation.y = Math.PI / 2;
-      
+      roverObject.scale.setScalar(roverSettings.scale);
+      roverObject.rotation.set(0, roverSettings.rotY, 0);
+      roverObject.position.set(roverSettings.posX, roverSettings.posY, roverSettings.posZ);
+
       roverObject.traverse((child) => {
         if (child.isMesh) {
           child.castShadow = true;
           child.receiveShadow = true;
+          child.material.envMapIntensity = 1.5; // Enhance reflections
         }
       });
-      
+
       scene.add(roverObject);
-      
-      // Add hotspot for rover
       addHotspot(roverObject.position, "NASA Rover", 0xff0000);
     },
     undefined,
@@ -245,16 +310,18 @@ function addWaypoints() {
     marker.position.copy(wp.position);
     scene.add(marker);
     
-    // Add label
-    const label = document.createElement('div');
-    label.className = 'waypoint-label';
-    label.textContent = wp.name;
-    label.style.color = `rgb(${wp.color >> 16}, ${(wp.color >> 8) & 0xff}, ${wp.color & 0xff})`;
-    
-    const labelObj = new CSS2DObject(label);
-    labelObj.position.copy(wp.position);
-    labelObj.position.y += 50;
-    scene.add(labelObj);
+    // Add label if CSS2DObject is available
+    if (typeof CSS2DObject !== 'undefined') {
+      const label = document.createElement('div');
+      label.className = 'waypoint-label';
+      label.textContent = wp.name;
+      label.style.color = `rgb(${wp.color >> 16}, ${(wp.color >> 8) & 0xff}, ${wp.color & 0xff})`;
+      
+      const labelObj = new CSS2DObject(label);
+      labelObj.position.copy(wp.position);
+      labelObj.position.y += 50;
+      scene.add(labelObj);
+    }
     
     // Add hotspot for waypoint
     if (wp.name !== "NASA Rover") {
@@ -361,9 +428,14 @@ window.addEventListener('mousemove', (event) => {
       y: event.clientY - previousMousePosition.y
     };
 
-    camera.rotation.y -= deltaMove.x * rotateSpeed;
-    camera.rotation.x -= deltaMove.y * rotateSpeed;
-    // Remove rotation limits for full freedom
+    yaw -= deltaMove.x * rotateSpeed;
+    pitch -= deltaMove.y * rotateSpeed;
+
+    // Clamp pitch to prevent flipping
+    const pitchLimit = Math.PI / 2 - 0.01;
+    pitch = Math.max(-pitchLimit, Math.min(pitchLimit, pitch));
+    
+    camera.rotation.set(pitch, yaw, 0);
   }
 
   // Show/hide hotspots based on mouse position
@@ -413,8 +485,14 @@ function checkHotspotHover(event) {
   }
 }
 
-// Update camera position and telemetry
+// Update rover movement (disabled since position is locked)
+function updateRoverMovement() {
+  // Rover movement is disabled as position is locked
+}
+
+// Update the camera position and telemetry function with improved collision detection
 function updateCamera() {
+  // Free camera movement
   const direction = new THREE.Vector3();
   camera.getWorldDirection(direction);
 
@@ -430,18 +508,39 @@ function updateCamera() {
   targetPosition.z = Math.max(minZ, Math.min(maxZ, targetPosition.z));
   targetPosition.y = Math.max(minY, Math.min(maxY, targetPosition.y));
 
-  // Check collision with rover
+  // Improved rover collision detection
   if (roverObject) {
-    const roverBox = new THREE.Box3().setFromObject(roverObject);
-    const cameraBox = new THREE.Box3().setFromCenterAndSize(
-      targetPosition, 
-      new THREE.Vector3(COLLISION_PADDING * 2, COLLISION_PADDING * 2, COLLISION_PADDING * 2)
-    );
-    
-    if (roverBox.intersectsBox(cameraBox)) {
-      // Push back from rover
-      const pushDirection = targetPosition.clone().sub(roverObject.position).normalize();
-      targetPosition.copy(roverObject.position).add(pushDirection.multiplyScalar(100));
+    // Create a bounding sphere for the rover (more accurate than box for irregular shapes)
+    const roverBoundingSphere = new THREE.Sphere();
+    roverObject.updateMatrixWorld();
+    roverObject.traverse((child) => {
+      if (child.isMesh) {
+        const geometry = child.geometry;
+        if (geometry.boundingSphere === null) {
+          geometry.computeBoundingSphere();
+        }
+        const sphere = geometry.boundingSphere.clone();
+        sphere.applyMatrix4(child.matrixWorld);
+        roverBoundingSphere.union(sphere);
+      }
+    });
+
+    // Add padding to the sphere
+    roverBoundingSphere.radius += 100; // Increased padding to prevent camera from getting too close
+
+    // Check if camera target position is inside rover's bounding sphere
+    const cameraToRover = new THREE.Vector3().subVectors(targetPosition, roverBoundingSphere.center);
+    const distanceToRover = cameraToRover.length();
+
+    if (distanceToRover < roverBoundingSphere.radius) {
+      // Calculate push back direction
+      const pushDirection = cameraToRover.normalize();
+      
+      // Calculate how much we need to push the camera back
+      const pushDistance = roverBoundingSphere.radius - distanceToRover;
+      
+      // Push camera back to the surface of the sphere plus a small offset
+      targetPosition.addScaledVector(pushDirection, pushDistance + 10);
     }
   }
 
@@ -468,7 +567,6 @@ function updateCamera() {
 
   smoothedPosition.lerp(targetPosition, SMOOTHING_FACTOR);
   camera.position.copy(smoothedPosition);
-  camera.quaternion.slerp(targetQuaternion, ROTATION_SMOOTHING);
 
   currentVelocity.subVectors(camera.position, previousPosition);
   const speed = currentVelocity.length();
@@ -493,16 +591,27 @@ function updateCamera() {
 
 // Update telemetry display
 function updateTelemetry(position, speed) {
-  document.getElementById('position-value').textContent = 
-    `${Math.round(position.x)}, ${Math.round(position.y)}, ${Math.round(position.z)}`;
+  const positionElement = document.getElementById('position-value');
+  const elevationElement = document.getElementById('elevation-value');
+  const speedElement = document.getElementById('speed-value');
+  const compassElement = document.querySelector('.compass-arrow');
+
+  if (positionElement) {
+    positionElement.textContent = 
+      `${Math.round(position.x)}, ${Math.round(position.y)}, ${Math.round(position.z)}`;
+  }
   
-  document.getElementById('elevation-value').textContent = 
-    `${Math.round(position.y - 5350)}m`;
+  if (elevationElement) {
+    elevationElement.textContent = `${Math.round(position.y - 5350)}m`;
+  }
   
-  document.getElementById('speed-value').textContent = 
-    `${Math.round(speed * 10)} km/h`;
+  if (speedElement) {
+    speedElement.textContent = `${Math.round(speed * 10)} km/h`;
+  }
   
-  document.querySelector('.compass-arrow').style.transform = `rotate(${-camera.rotation.y}rad)`;
+  if (compassElement) {
+    compassElement.style.transform = `rotate(${-camera.rotation.y}rad)`;
+  }
 }
 
 // Animation loop
@@ -513,7 +622,7 @@ function animate() {
   composer.render();
   
   // Update minimap
-  if (moonObject) {
+  if (moonObject && minimapRenderer) {
     minimapCamera.position.set(camera.position.x, 10000, camera.position.z);
     minimapRenderer.render(scene, minimapCamera);
   }
